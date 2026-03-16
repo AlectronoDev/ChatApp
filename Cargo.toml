@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "services/api",
+    "apps/cli",
+    "crates/crypto_core",
+    "crates/protocol",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+# Declare all shared deps here once; individual crates inherit with { workspace = true }.
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database (not wired up yet — added for when auth lands)
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "macros",
+    "migrate",
+] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+
+# Cryptography
+argon2 = { version = "0.5", features = ["std"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+hkdf = "0.12"
+base64 = "0.22"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = { version = "2" }
+chacha20poly1305 = "0.10"
