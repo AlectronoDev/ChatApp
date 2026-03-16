@@ -1,9 +1,0 @@
-2026-03-15T00:58:35.114759Z  INFO sqlx::postgres::notice: relation "_sqlx_migrations" already exists, skipping
-2026-03-15T00:58:35.130422Z  INFO api: database migrations applied
-2026-03-15T00:58:35.132531Z  INFO api: API server listening on 0.0.0.0:3000
-2026-03-15T00:58:39.142719Z  INFO api::routes::auth: new account created user_id=347844e8-d97f-4c38-bfee-59dca3fb671c username=bob
-2026-03-15T00:59:00.947949Z  INFO api::routes::auth: login successful user_id=33d4e216-6acd-448e-8fc1-702999d81ec3
-2026-03-15T00:59:23.745670Z  INFO api::routes::messages: DM thread created thread_id=df36b4f8-68a6-4a43-96fa-408d0267a81e user_a=33d4e216-6acd-448e-8fc1-702999d81ec3 user_b=347844e8-d97f-4c38-bfee-59dca3fb671c
-2026-03-15T00:59:43.177811Z  INFO api::routes::devices: device registered user_id=33d4e216-6acd-448e-8fc1-702999d81ec3 device_id=9d6c6d8a-2c08-442e-a07c-fd972af380d6 prekeys_uploaded=0
-2026-03-15T00:59:43.549488Z  INFO api::routes::devices: device registered user_id=347844e8-d97f-4c38-bfee-59dca3fb671c device_id=aac3ec6d-4bac-4c9c-aeca-945d5cb16a6a prekeys_uploaded=0
-2026-03-15T01:00:38.096068Z  INFO api::routes::messages: message batch stored thread_id=df36b4f8-68a6-4a43-96fa-408d0267a81e sender=33d4e216-6acd-448e-8fc1-702999d81ec3 batch_id=019cef02-6744-7420-bb15-e9639ccaac4f envelopes=1
