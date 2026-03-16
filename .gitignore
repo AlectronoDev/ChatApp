@@ -1,4 +1,6 @@
 /target
+/apps
+/demo
 .env
 *.pem
 *.key
