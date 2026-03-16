@@ -5,3 +5,5 @@
 *.pem
 *.key
 *.p8
+api_err.txt
+api_out.txt
