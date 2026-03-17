@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE device_one_time_prekeys\n            SET consumed_at = NOW()\n            WHERE id = (\n                SELECT id FROM device_one_time_prekeys\n                WHERE device_id = $1 AND consumed_at IS NULL\n                LIMIT 1\n                FOR UPDATE SKIP LOCKED\n            )\n            RETURNING key_id, public_key\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "public_key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "531f30819cc9ccd256f9cbc02d3a38b7291e280a62e030a55f1d6395adee894b"
+}

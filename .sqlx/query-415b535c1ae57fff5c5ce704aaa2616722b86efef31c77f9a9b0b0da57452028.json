@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE message_envelopes\n        SET delivered_at = NOW()\n        WHERE thread_id = $1\n          AND recipient_device_id = $2\n          AND batch_id = ANY($3::uuid[])\n          AND delivered_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "415b535c1ae57fff5c5ce704aaa2616722b86efef31c77f9a9b0b0da57452028"
+}

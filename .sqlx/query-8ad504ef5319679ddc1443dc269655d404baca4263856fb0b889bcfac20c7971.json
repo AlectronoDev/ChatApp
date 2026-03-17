@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT s.id AS session_id, s.user_id, u.username\n            FROM sessions s\n            JOIN users u ON u.id = s.user_id\n            WHERE s.token_hash = $1\n              AND s.revoked_at IS NULL\n              AND s.expires_at > $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "username",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8ad504ef5319679ddc1443dc269655d404baca4263856fb0b889bcfac20c7971"
+}

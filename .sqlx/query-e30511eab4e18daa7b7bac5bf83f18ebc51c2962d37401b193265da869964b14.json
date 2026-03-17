@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE channel_envelopes\n        SET delivered_at = NOW()\n        WHERE channel_id = $1\n          AND recipient_device_id = $2\n          AND batch_id = ANY($3::uuid[])\n          AND delivered_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e30511eab4e18daa7b7bac5bf83f18ebc51c2962d37401b193265da869964b14"
+}

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.id AS thread_id, t.created_at,\n               u.id AS other_user_id, u.username AS other_username\n        FROM dm_threads t\n        JOIN dm_thread_members m_self  ON m_self.thread_id  = t.id AND m_self.user_id  = $1\n        JOIN dm_thread_members m_other ON m_other.thread_id = t.id AND m_other.user_id != $1\n        JOIN users u ON u.id = m_other.user_id\n        ORDER BY t.created_at DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "thread_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "other_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "other_username",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8e45a61f1a1aaa8e727a645e7897fce6c0fbb67b12fd745760444cd9ad6f0219"
+}

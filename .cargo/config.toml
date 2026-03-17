@@ -1,0 +1,4 @@
+[env]
+# Use the .sqlx query cache so sqlx::query! macros never need a live DB
+# connection at compile time. Rust Analyzer picks this up automatically.
+SQLX_OFFLINE = "true"

@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, identity_key, identity_dh_key,\n               signed_prekey_id, signed_prekey_pub, signed_prekey_sig\n        FROM devices WHERE user_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "identity_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_dh_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "signed_prekey_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "signed_prekey_pub",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "signed_prekey_sig",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2aa0aff1b3c6874f8f7edd3e3aff289003c5338abbe8368570c922781ca0bd4e"
+}
