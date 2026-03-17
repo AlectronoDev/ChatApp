@@ -1,5 +1,7 @@
 # Encrypted Chat App
 
+(Demo setup guide is contained in demo/DEMO.md)
+
 A Discord-like chat application with end-to-end encryption. The server only
 ever stores ciphertext and public key material — message content is never
 readable by the server operator.
