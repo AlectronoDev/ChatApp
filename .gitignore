@@ -8,3 +8,4 @@ demo/**/chat_session.json
 *.p8
 api_err.txt
 api_out.txt
+/.sqlx
