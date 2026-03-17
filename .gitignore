@@ -2,6 +2,7 @@
 /apps/web
 demo/**/chat_session.json
 .env
+/.cursor
 *.pem
 *.key
 *.p8
