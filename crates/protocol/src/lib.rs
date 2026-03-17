@@ -305,6 +305,35 @@ pub struct ChannelSummary {
     pub created_at: DateTime<Utc>,
 }
 
+// ─── User profiles ────────────────────────────────────────────────────────────
+
+/// Public profile returned by `GET /users/{username}/profile`.
+/// All optional fields are absent when the user has not set them.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PublicProfile {
+    pub user_id: Uuid,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+/// Request body for `PATCH /users/me/profile`.
+/// All fields are optional — only the fields present in the request are written.
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileRequest {
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+/// Request body for `DELETE /users/me`.
+/// Password confirmation is required before account deletion.
+#[derive(Debug, Deserialize)]
+pub struct DeleteAccountRequest {
+    pub password: String,
+}
+
 // ─── Channel messages ─────────────────────────────────────────────────────────
 //
 // Channel messages reuse the same request/response types as DM messages

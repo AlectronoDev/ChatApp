@@ -1,5 +1,5 @@
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -41,7 +41,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/login", post(routes::auth::login))
         .route("/auth/logout", post(routes::auth::logout))
         .route("/auth/recover", post(routes::auth::recover))
-        .route("/users/me", get(routes::auth::me))
+        // /users/me static paths must come before /{username} dynamic paths.
+        .route(
+            "/users/me",
+            get(routes::auth::me).delete(routes::profiles::delete_account),
+        )
+        .route("/users/me/profile", patch(routes::profiles::update_profile))
         // Devices
         .route("/devices", post(routes::devices::register_device))
         .route("/devices", get(routes::devices::list_devices))
@@ -53,9 +58,10 @@ async fn main() -> anyhow::Result<()> {
         )
         // Public identity keys for a single device (no prekey consumption)
         .route("/devices/{id}/info", get(routes::devices::get_device_public_info))
-        // User search and lookup — static segments registered before /:username
+        // User search, lookup, and profile — static segments before /{username}
         .route("/users/search", get(routes::users::search_users))
         .route("/users/{username}", get(routes::users::get_user))
+        .route("/users/{username}/profile", get(routes::profiles::get_profile))
         // DM threads
         .route("/dms", post(routes::messages::create_or_get_dm))
         .route("/dms", get(routes::messages::list_dms))
