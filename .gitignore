@@ -1,6 +1,6 @@
 /target
-/demo
 /apps/web
+demo/**/chat_session.json
 .env
 *.pem
 *.key
