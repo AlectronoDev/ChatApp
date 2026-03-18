@@ -216,7 +216,7 @@ fn validate_username(username: &str) -> Result<(), AppError> {
     let len = username.len();
     if len < 3 || len > 32 {
         return Err(AppError::BadRequest(
-            "Username must be 3–32 characters.".into(),
+            "Username must be 3-32 characters.".into(),
         ));
     }
     if !username

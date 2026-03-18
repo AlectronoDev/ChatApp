@@ -26,3 +26,4 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 
 protocol = { path = "../../crates/protocol" }
+crypto_core = { path = "../../crates/crypto_core" }

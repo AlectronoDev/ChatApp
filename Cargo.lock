@@ -50,6 +50,7 @@ dependencies = [
  "argon2",
  "axum",
  "chrono",
+ "crypto_core",
  "dotenvy",
  "hex",
  "protocol",

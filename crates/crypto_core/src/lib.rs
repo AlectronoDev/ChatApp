@@ -35,6 +35,12 @@ pub enum CryptoError {
     #[error("invalid key length")]
     InvalidKeyLength,
 
+    #[error("invalid Ed25519 key: point is not on the curve")]
+    InvalidKeyEncoding,
+
+    #[error("signature verification failed")]
+    InvalidSignature,
+
     #[error("encryption failed")]
     EncryptionFailed,
 
@@ -126,6 +132,64 @@ pub fn generate_device_keys() -> (DeviceKeyMaterial, DevicePublicKeys) {
 pub fn dh_public_key_b64(secret_bytes: &[u8; 32]) -> String {
     let secret = StaticSecret::from(*secret_bytes);
     B64.encode(X25519Public::from(&secret).as_bytes())
+}
+
+// ─── Key validation helpers ───────────────────────────────────────────────────
+
+/// Decode a base64-encoded Ed25519 verifying key, returning the raw 32 bytes.
+///
+/// Returns an error if the string is not valid base64 or the decoded length is
+/// not exactly 32 bytes. Does not validate that the point lies on the curve —
+/// use [`verify_signed_prekey`] for full cryptographic validation.
+pub fn decode_ed25519_pubkey(b64: &str) -> Result<[u8; 32], CryptoError> {
+    B64.decode(b64)?
+        .try_into()
+        .map_err(|_| CryptoError::InvalidKeyLength)
+}
+
+/// Decode a base64-encoded X25519 public key, returning the raw 32 bytes.
+///
+/// Returns an error if the string is not valid base64 or the decoded length is
+/// not exactly 32 bytes. All 32-byte values are valid X25519 keys after
+/// Curve25519 clamping, so no further point validation is needed.
+pub fn decode_x25519_pubkey(b64: &str) -> Result<[u8; 32], CryptoError> {
+    B64.decode(b64)?
+        .try_into()
+        .map_err(|_| CryptoError::InvalidKeyLength)
+}
+
+/// Verify that a signed prekey carries a valid Ed25519 signature from the
+/// device's identity key.
+///
+/// The signed message format is `key_id_be32 || prekey_pub_bytes`, which
+/// matches the format produced by [`generate_device_keys`]. This prevents a
+/// malicious server from substituting an attacker-controlled prekey while
+/// still serving the client's real identity key.
+pub fn verify_signed_prekey(
+    identity_key_b64: &str,
+    key_id: i32,
+    prekey_pub_b64: &str,
+    signature_b64: &str,
+) -> Result<(), CryptoError> {
+    let ik_bytes: [u8; 32] = decode_ed25519_pubkey(identity_key_b64)?;
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&ik_bytes)
+        .map_err(|_| CryptoError::InvalidKeyEncoding)?;
+
+    let spk_bytes: [u8; 32] = decode_x25519_pubkey(prekey_pub_b64)?;
+
+    let sig_bytes: [u8; 64] = B64
+        .decode(signature_b64)?
+        .try_into()
+        .map_err(|_| CryptoError::InvalidKeyLength)?;
+    let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+
+    let mut message = [0u8; 4 + 32];
+    message[..4].copy_from_slice(&key_id.to_be_bytes());
+    message[4..].copy_from_slice(&spk_bytes);
+
+    verifying_key
+        .verify_strict(&message, &signature)
+        .map_err(|_| CryptoError::InvalidSignature)
 }
 
 // ─── Encryption / Decryption ──────────────────────────────────────────────────
@@ -262,5 +326,77 @@ mod tests {
             decrypt_from_device(&bob_mat.dh_secret, &alice_pub.identity_dh_key, &ciphertext, b"wrong-aad");
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn signed_prekey_verification_succeeds_for_valid_keys() {
+        let (_, pub_keys) = generate_device_keys();
+
+        assert!(verify_signed_prekey(
+            &pub_keys.identity_key,
+            pub_keys.signed_prekey_id,
+            &pub_keys.signed_prekey_pub,
+            &pub_keys.signed_prekey_sig,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn signed_prekey_verification_fails_for_wrong_identity_key() {
+        let (_, pub_keys) = generate_device_keys();
+        let (_, other) = generate_device_keys();
+
+        let result = verify_signed_prekey(
+            &other.identity_key, // wrong key
+            pub_keys.signed_prekey_id,
+            &pub_keys.signed_prekey_pub,
+            &pub_keys.signed_prekey_sig,
+        );
+        assert!(matches!(result, Err(CryptoError::InvalidSignature)));
+    }
+
+    #[test]
+    fn signed_prekey_verification_fails_for_tampered_prekey() {
+        let (_, pub_keys) = generate_device_keys();
+        let (_, other) = generate_device_keys();
+
+        let result = verify_signed_prekey(
+            &pub_keys.identity_key,
+            pub_keys.signed_prekey_id,
+            &other.signed_prekey_pub, // tampered
+            &pub_keys.signed_prekey_sig,
+        );
+        assert!(matches!(result, Err(CryptoError::InvalidSignature)));
+    }
+
+    #[test]
+    fn signed_prekey_verification_fails_for_wrong_key_id() {
+        let (_, pub_keys) = generate_device_keys();
+
+        let result = verify_signed_prekey(
+            &pub_keys.identity_key,
+            pub_keys.signed_prekey_id + 1, // wrong id changes the message
+            &pub_keys.signed_prekey_pub,
+            &pub_keys.signed_prekey_sig,
+        );
+        assert!(matches!(result, Err(CryptoError::InvalidSignature)));
+    }
+
+    #[test]
+    fn decode_ed25519_pubkey_rejects_wrong_length() {
+        let short = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
+        assert!(matches!(
+            decode_ed25519_pubkey(&short),
+            Err(CryptoError::InvalidKeyLength)
+        ));
+    }
+
+    #[test]
+    fn decode_x25519_pubkey_rejects_wrong_length() {
+        let long = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
+        assert!(matches!(
+            decode_x25519_pubkey(&long),
+            Err(CryptoError::InvalidKeyLength)
+        ));
     }
 }

@@ -195,7 +195,9 @@ pub struct RegisterDeviceRequest {
     /// base64-encoded X25519 public key.
     pub identity_dh_key: String,
     pub signed_prekey: SignedPrekey,
-    /// May be empty but clients should upload a batch (e.g. 20–100 keys).
+    /// At least 10 keys are required at registration; uploading 50–100 is
+    /// recommended so fresh key material is available for many concurrent
+    /// session initiations before the device needs to replenish.
     pub one_time_prekeys: Vec<OneTimePrekey>,
 }
 
