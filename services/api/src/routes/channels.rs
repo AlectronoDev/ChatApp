@@ -330,6 +330,24 @@ pub async fn ack_channel_messages(
         ));
     }
 
+    // Channel membership check before device check — same oracle-prevention
+    // reasoning as ack_messages: Forbidden must not confirm channel existence.
+    let is_member: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS( \
+             SELECT 1 FROM server_members sm \
+             JOIN channels c ON c.server_id = sm.server_id \
+             WHERE c.id = $1 AND sm.user_id = $2 \
+         )",
+    )
+    .bind(channel_id)
+    .bind(auth.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !is_member {
+        return Err(AppError::Forbidden);
+    }
+
     let device_owned = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1 AND user_id = $2)",
         req.device_id,

@@ -166,6 +166,7 @@ impl ApiClient {
             .bearer_auth(token)
             .json(&SendMessageRequest {
                 sender_device_id,
+                batch_id: Uuid::now_v7(),
                 envelopes,
             })
             .send()?;
@@ -294,7 +295,11 @@ impl ApiClient {
             .client
             .post(format!("{}/channels/{}/messages", self.base_url, channel_id))
             .bearer_auth(token)
-            .json(&SendMessageRequest { sender_device_id, envelopes })
+            .json(&SendMessageRequest {
+                sender_device_id,
+                batch_id: Uuid::now_v7(),
+                envelopes,
+            })
             .send()?;
         self.parse(resp)
     }

@@ -25,5 +25,7 @@ rand = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 
+governor = { workspace = true }
+
 protocol = { path = "../../crates/protocol" }
 crypto_core = { path = "../../crates/crypto_core" }

@@ -401,7 +401,12 @@ fn send_encrypted(
     for (device_id, dh_pub_b64) in recipients {
         let ciphertext = encrypt_for_device(&our_dh, &dh_pub_b64, plaintext, aad)
             .map_err(|e| anyhow::anyhow!("encryption failed: {e}"))?;
-        envelopes.push(OutboundEnvelope { recipient_device_id: device_id, ciphertext });
+        envelopes.push(OutboundEnvelope {
+            recipient_device_id: device_id,
+            ciphertext,
+            protocol_version: 1,
+            x3dh_init: None,
+        });
     }
 
     if envelopes.is_empty() {
@@ -416,6 +421,8 @@ fn send_encrypted(
     envelopes.push(OutboundEnvelope {
         recipient_device_id: session.device_id,
         ciphertext: self_ciphertext,
+        protocol_version: 1,
+        x3dh_init: None,
     });
 
     let resp = api.send_message(&session.token, thread_id, session.device_id, envelopes)?;
@@ -807,7 +814,12 @@ fn send_channel_encrypted(
 
         let ciphertext = encrypt_for_device(&our_dh, &dh_pub, plaintext, aad)
             .map_err(|e| anyhow::anyhow!("encryption failed: {e}"))?;
-        envelopes.push(OutboundEnvelope { recipient_device_id: device_id, ciphertext });
+        envelopes.push(OutboundEnvelope {
+            recipient_device_id: device_id,
+            ciphertext,
+            protocol_version: 1,
+            x3dh_init: None,
+        });
     }
 
     // Self-envelope so we can see sent messages in history.
@@ -817,6 +829,8 @@ fn send_channel_encrypted(
     envelopes.push(OutboundEnvelope {
         recipient_device_id: session.device_id,
         ciphertext: self_ciphertext,
+        protocol_version: 1,
+        x3dh_init: None,
     });
 
     if envelopes.len() < 2 {

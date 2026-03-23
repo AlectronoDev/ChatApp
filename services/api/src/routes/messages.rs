@@ -493,6 +493,21 @@ pub async fn ack_messages(
         ));
     }
 
+    // Thread membership check must happen BEFORE the device check so an
+    // unauthenticated probe of thread existence gets Forbidden, not the
+    // device-ownership error, which would confirm that the thread exists.
+    let is_member: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM dm_thread_members WHERE thread_id = $1 AND user_id = $2)",
+    )
+    .bind(thread_id)
+    .bind(auth.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !is_member {
+        return Err(AppError::Forbidden);
+    }
+
     let device_owned = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1 AND user_id = $2)",
         req.device_id,

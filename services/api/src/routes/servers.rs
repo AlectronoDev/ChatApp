@@ -6,6 +6,12 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{error::AppError, extract::AuthUser, state::AppState};
+
+/// Maximum servers a user may own/create. Prevents resource exhaustion.
+const MAX_SERVERS_PER_USER: i64 = 10;
+
+/// Maximum channels per server. Keeps the membership fan-out manageable.
+const MAX_CHANNELS_PER_SERVER: i64 = 50;
 use protocol::{
     ChannelSummary, CreateChannelRequest, CreateChannelResponse, CreateServerRequest,
     CreateServerResponse, InviteToServerRequest, ServerDetails, ServerMember, ServerSummary,
@@ -21,6 +27,19 @@ pub async fn create_server(
     let name = req.name.trim().to_owned();
     if name.is_empty() || name.len() > 100 {
         return Err(AppError::BadRequest("Server name must be 1–100 characters.".into()));
+    }
+
+    let server_count: i64 = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM servers WHERE created_by = $1",
+    )
+    .bind(auth.user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if server_count >= MAX_SERVERS_PER_USER {
+        return Err(AppError::BadRequest(format!(
+            "Maximum of {MAX_SERVERS_PER_USER} servers per account."
+        )));
     }
 
     let mut tx = state.db.begin().await?;
@@ -291,6 +310,19 @@ pub async fn create_channel(
 
     if role != "owner" {
         return Err(AppError::Forbidden);
+    }
+
+    let channel_count: i64 = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM channels WHERE server_id = $1",
+    )
+    .bind(server_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if channel_count >= MAX_CHANNELS_PER_SERVER {
+        return Err(AppError::BadRequest(format!(
+            "Maximum of {MAX_CHANNELS_PER_SERVER} channels per server."
+        )));
     }
 
     let channel_id = sqlx::query_scalar!(

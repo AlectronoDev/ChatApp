@@ -57,3 +57,6 @@ base64 = "0.22"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2" }
 chacha20poly1305 = "0.10"
+
+# Rate limiting (GCRA, keyed by user-ID for per-user throttling)
+governor = { version = "0.8", features = ["dashmap"] }
