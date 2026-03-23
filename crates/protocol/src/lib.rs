@@ -419,3 +419,178 @@ pub struct RatchetSessionResponse {
 // (`SendMessageRequest`, `SendMessageResponse`, `InboundMessage`,
 // `FetchMessagesResponse`, `AckMessagesRequest`) — no new types needed.
 
+// ─── MLS: KeyPackage management ───────────────────────────────────────────────
+
+/// Upload one or more MLS KeyPackages for this device.
+///
+/// KeyPackages are consumed one-at-a-time when another device adds this device
+/// to a new MLS group (analogous to one-time prekeys in X3DH). Each entry in
+/// `key_packages` is a base64-encoded TLS-encoded KeyPackage per RFC 9420 §10.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UploadMlsKeyPackagesRequest {
+    pub key_packages: Vec<String>,
+}
+
+/// A claimed KeyPackage returned when listing key material for a target user.
+/// The claimant uses this to build a `Welcome` message addressed to `device_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MlsKeyPackageClaim {
+    pub device_id: Uuid,
+    /// base64-encoded TLS-encoded KeyPackage (opaque to the server).
+    pub key_package_data: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClaimMlsKeyPackagesResponse {
+    /// One entry per device belonging to the target user that has an available
+    /// KeyPackage. Devices with no remaining KeyPackages are omitted.
+    pub claims: Vec<MlsKeyPackageClaim>,
+}
+
+// ─── MLS: Group initialization ────────────────────────────────────────────────
+
+/// Per-device Welcome envelope included in a Commit that adds new members.
+/// Each Welcome is encrypted to the recipient's KeyPackage HPKE init key;
+/// no one other than the recipient (and whoever holds the matching private key)
+/// can read the group secrets it carries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MlsWelcomeEnvelope {
+    pub recipient_device_id: Uuid,
+    /// base64-encoded TLS-encoded MLS Welcome message per RFC 9420 §12.4.3.1.
+    pub welcome_data: String,
+}
+
+/// Initialize an MLS group for a channel.
+///
+/// May be called exactly once per channel. The creator establishes the initial
+/// group state and, if adding others in the same operation, provides Welcome
+/// messages for each initial non-creator member.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InitMlsGroupRequest {
+    pub creator_device_id: Uuid,
+    /// Opaque MLS group_id chosen by the creator, base64-encoded bytes.
+    /// This is NOT the channel UUID — it is the raw MLS GroupID value.
+    pub group_id_b64: String,
+    /// Complete initial member set (device IDs). Must include `creator_device_id`.
+    pub initial_member_device_ids: Vec<Uuid>,
+    /// Client-provided UUID v7 for idempotency. Resubmitting the same
+    /// `batch_id` for the same channel returns the original response.
+    pub batch_id: Uuid,
+    /// base64-encoded TLS-encoded initial Commit message.
+    pub initial_commit: String,
+    /// Welcome messages for all initial members other than the creator.
+    pub welcome_messages: Vec<MlsWelcomeEnvelope>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InitMlsGroupResponse {
+    /// Server-assigned UUID for this MLS group (used in subsequent API calls).
+    pub group_id: Uuid,
+    pub channel_id: Uuid,
+}
+
+// ─── MLS: Commits (membership changes and key updates) ────────────────────────
+
+/// Submit a Commit message to advance the MLS group epoch.
+///
+/// Commits are the only mechanism for group state changes: member add/remove,
+/// ratchet-tree key rotation (Update), and external Commits. The server
+/// enforces that `epoch == current_epoch` to reject stale or replayed Commits.
+/// The first Commit for a given epoch wins; concurrent duplicates receive 409.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubmitMlsCommitRequest {
+    pub sender_device_id: Uuid,
+    /// Client-provided UUID v7 for idempotency.
+    pub batch_id: Uuid,
+    /// The epoch this Commit was created in.  Must equal the group's
+    /// `current_epoch`. Acceptance advances the group to `epoch + 1`.
+    pub epoch: i64,
+    /// base64-encoded TLS-encoded MLSMessage containing the Commit.
+    pub commit_data: String,
+    /// Complete member set AFTER this Commit takes effect.
+    /// The server replaces the stored member list atomically.
+    /// All IDs must be valid, registered devices that are server members.
+    pub new_member_device_ids: Vec<Uuid>,
+    /// Welcome messages for any devices newly added by this Commit.
+    pub welcome_messages: Vec<MlsWelcomeEnvelope>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubmitMlsCommitResponse {
+    /// The new epoch number after the Commit was accepted.
+    pub new_epoch: i64,
+}
+
+// ─── MLS: Application messages ───────────────────────────────────────────────
+
+/// Send an MLS application message to the group.
+///
+/// Unlike legacy per-device channel envelopes, an MLS application message is
+/// a SINGLE group ciphertext decryptable by all current members using the
+/// epoch encryption key. The server fans it out to all current members.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendMlsMessageRequest {
+    pub sender_device_id: Uuid,
+    /// Client-provided UUID v7 for idempotency.
+    pub batch_id: Uuid,
+    /// The epoch this message was encrypted in.
+    pub epoch: i64,
+    /// base64-encoded TLS-encoded MLSMessage (PrivateMessage, application type).
+    pub message_data: String,
+}
+
+/// A single MLS message as returned in a fetch response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MlsInboundMessage {
+    /// Server-assigned UUID v7; use as `after` cursor in the next fetch.
+    pub id: Uuid,
+    pub sender_device_id: Uuid,
+    /// "application" or "commit".
+    pub message_type: String,
+    pub epoch: i64,
+    pub message_data: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FetchMlsMessagesResponse {
+    pub messages: Vec<MlsInboundMessage>,
+    /// `true` if more messages exist beyond this page.
+    pub has_more: bool,
+}
+
+// ─── MLS: Welcome messages for new members ────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MlsPendingWelcome {
+    /// Row ID — use for ACK.
+    pub id: Uuid,
+    /// Server-side MLS group UUID.
+    pub group_id: Uuid,
+    pub channel_id: Uuid,
+    pub epoch: i64,
+    /// base64-encoded TLS-encoded Welcome (opaque; encrypted to this device).
+    pub welcome_data: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FetchMlsWelcomesResponse {
+    pub welcomes: Vec<MlsPendingWelcome>,
+}
+
+// ─── MLS: Group info ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MlsGroupInfo {
+    /// Server-assigned UUID for this group.
+    pub group_id: Uuid,
+    pub channel_id: Uuid,
+    /// Opaque MLS GroupID chosen by the creator (base64-encoded bytes).
+    pub mls_group_id_b64: String,
+    pub current_epoch: i64,
+    pub member_device_ids: Vec<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+

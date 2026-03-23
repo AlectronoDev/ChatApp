@@ -10,10 +10,13 @@
 //!   secret between two devices without prior contact.
 //! - **Double Ratchet** (`double_ratchet` module): Signal Double Ratchet
 //!   algorithm providing forward secrecy and break-in recovery for DMs.
+//! - **MLS** (`mls` module): Message Layer Security (RFC 9420) delivery-service
+//!   helpers; the server-side infrastructure for group channel encryption.
 //! - **Legacy ECDH** (this module): Static ECDH session key derivation kept
-//!   for reference only; all new code should use X3DH + Double Ratchet.
+//!   for reference only; all new code should use X3DH + Double Ratchet or MLS.
 
 pub mod double_ratchet;
+pub mod mls;
 pub mod x3dh;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};

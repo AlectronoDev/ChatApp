@@ -561,3 +561,147 @@ observer after TLS terminates at the server):
 
 This is documented here so the team makes conscious decisions when adding new
 fields rather than inadvertently leaking sensitive data.
+
+---
+
+## 9. MLS Channel Encryption (RFC 9420)
+
+### 9.1 Design Principle: Pure Delivery Service
+
+The server acts as a **Delivery Service (DS)** as defined in RFC 9420 §4.  It
+stores and fans out opaque TLS-encoded MLS objects without parsing their
+internal structure. All cryptographic state (ratchet trees, epoch key
+schedules, group secrets) is held exclusively by client devices.
+
+**What the server knows (non-secret):**
+- Device IDs in the current member list (device UUIDs only; no keys)
+- The current epoch number
+- Message arrival order (server-assigned UUID v7 IDs)
+- Message type ("application" or "commit")
+
+**What the server never knows:**
+- Group encryption keys or ratchet-tree secrets
+- KeyPackage private keys
+- Welcome message contents (encrypted to recipient HPKE init key)
+- Plaintext of any application message or Commit path update
+
+### 9.2 Cipher Suite
+
+Mandatory cipher suite: `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`
+(cipher suite 0x0001 per RFC 9420 §17.1).
+
+All clients MUST refuse to create or join groups that use a different cipher
+suite until this protocol is updated.
+
+### 9.3 KeyPackage Lifecycle
+
+1. **Upload** — Each device periodically uploads a batch of KeyPackages
+   (`POST /devices/{id}/mls-key-packages`). A KeyPackage contains the device's
+   identity LeafNode and a fresh HPKE init key. Upload bounds: 1–100 per batch.
+
+2. **Claim** — Before inviting a device to a new group, the inviter fetches one
+   KeyPackage per target device (`GET /users/{username}/mls-key-packages/claim`).
+   The server atomically marks each claimed KeyPackage as consumed; it cannot be
+   reused (single-use, like OTPKs in X3DH).
+
+3. **Replenishment** — Clients SHOULD monitor the count of unclaimed KeyPackages
+   remaining for their own devices and upload more before the supply is
+   exhausted. If a device has no KeyPackages available it cannot be added to new
+   groups until it replenishes.
+
+4. **Expiry (future)** — A future migration will add a `valid_until` timestamp
+   to `mls_key_packages`. The DS will reject claims for expired KeyPackages.
+   Clients MUST include a `Lifetime` extension in KeyPackages per RFC 9420 §7.2.
+
+### 9.4 Group Initialization
+
+```
+POST /channels/{channel_id}/mls/init
+```
+
+Body: `InitMlsGroupRequest` containing the creator's device ID, the opaque MLS
+`group_id_b64`, the full initial member set (device IDs), the initial Commit
+message, and Welcome messages for each non-creator initial member.
+
+The server validates:
+- The channel exists and the creator is a server member.
+- All initial member device IDs belong to server members.
+- Blob sizes are within bounds (`MAX_MLS_MESSAGE_B64_BYTES` = 64 KiB,
+  `MAX_KEY_PACKAGE_B64_BYTES` = 8 KiB).
+- At most one MLS group per channel (unique constraint).
+
+The server atomically:
+1. Creates the `mls_groups` row at epoch 0.
+2. Inserts the initial member list into `mls_group_members`.
+3. Stores the initial Commit in `mls_messages`.
+4. Delivers Welcome messages to each non-creator member.
+
+### 9.5 Epoch Advancement (Commits)
+
+```
+POST /channels/{channel_id}/mls/commit
+```
+
+Body: `SubmitMlsCommitRequest` with the Commit message, the epoch being
+advanced FROM, the post-Commit member set, and Welcome messages for any newly
+added devices.
+
+**Epoch invariant**: `commit.epoch` must equal `current_epoch`. The server uses
+a `SELECT … FOR UPDATE` row lock to serialize concurrent Commit attempts for
+the same epoch. The first writer wins; subsequent conflicting Commits receive
+`409 Conflict`. This prevents forked group state.
+
+After acceptance:
+1. The Commit is stored in `mls_messages`.
+2. The member list in `mls_group_members` is replaced atomically.
+3. Welcome messages are stored for newly added devices.
+4. `mls_groups.current_epoch` is incremented to `epoch + 1`.
+
+**Post-compromise security**: Clients SHOULD submit a key-rotation Commit
+(Update proposal) periodically even without membership changes, to derive new
+epoch keys and provide break-in recovery per RFC 9420 §16.
+
+**Forward secrecy**: After a Commit is accepted, the secrets for the previous
+epoch are deleted from client state. Devices that were removed in that Commit
+cannot decrypt messages in the new epoch — enforced both cryptographically (MLS
+TreeKEM) and at the transport layer (DS only delivers to current members).
+
+### 9.6 Application Messages
+
+```
+POST /channels/{channel_id}/mls/messages
+GET  /channels/{channel_id}/mls/messages?device_id=...&after=...&limit=...
+```
+
+An MLS application message is a **single group ciphertext** encrypted with the
+epoch's `application_secret`, decryptable by all current group members. This
+replaces the O(N) per-device encryption of the legacy `channel_envelopes` path.
+
+The server stores one row per application message and fans it out via the fetch
+endpoint to all current members. Membership is checked on fetch; devices
+removed by a prior Commit can no longer retrieve new messages (defense-in-depth
+on top of MLS cryptographic exclusion).
+
+Pagination uses server-assigned UUID v7 IDs as cursors (monotonically ordered
+by arrival time). Pass `after={last_id}` to retrieve the next page.
+
+### 9.7 Welcome Messages
+
+Newly added members receive their Welcome messages via:
+
+```
+GET /devices/{device_id}/mls/welcomes
+```
+
+A Welcome contains encrypted `GroupSecrets` (the epoch secret and ratchet-tree
+path update) addressed to the new member's KeyPackage HPKE init key. The server
+cannot read the contents. Welcome messages are marked as delivered after the
+first successful fetch; clients MUST process and durably store group state
+before the Welcome is delivered, or re-fetch before it is marked delivered.
+
+### 9.8 Relationship to Legacy Channel Envelopes
+
+The `POST /channels/{id}/messages` endpoint sends per-device encrypted
+ciphertexts using a pre-MLS static-ECDH path. New channels SHOULD use the MLS
+endpoints above instead. The legacy path will be deprecated once client
+implementations are complete (phase 5).

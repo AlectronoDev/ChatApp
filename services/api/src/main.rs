@@ -85,10 +85,32 @@ async fn main() -> anyhow::Result<()> {
         // Channels (management scoped to a server)
         .route("/servers/{id}/channels", post(routes::servers::create_channel))
         .route("/servers/{id}/channels", get(routes::servers::list_channels))
-        // Channel messages
+        // Channel messages (legacy per-device path; superseded by MLS for new channels)
         .route("/channels/{id}/messages", post(routes::channels::send_channel_message))
         .route("/channels/{id}/messages", get(routes::channels::fetch_channel_messages))
         .route("/channels/{id}/messages/ack", post(routes::channels::ack_channel_messages))
+        // MLS KeyPackages (like OTPKs but for group sessions)
+        .route(
+            "/devices/{device_id}/mls-key-packages",
+            post(routes::mls::upload_mls_key_packages),
+        )
+        .route(
+            "/users/{username}/mls-key-packages/claim",
+            get(routes::mls::claim_mls_key_packages),
+        )
+        // MLS group management per channel
+        .route("/channels/{id}/mls/init", post(routes::mls::init_mls_group))
+        .route("/channels/{id}/mls/info", get(routes::mls::get_mls_group_info))
+        .route("/channels/{id}/mls/commit", post(routes::mls::submit_mls_commit))
+        .route(
+            "/channels/{id}/mls/messages",
+            post(routes::mls::send_mls_message).get(routes::mls::fetch_mls_messages),
+        )
+        // MLS Welcome messages delivered to new group members
+        .route(
+            "/devices/{device_id}/mls/welcomes",
+            get(routes::mls::fetch_mls_welcomes),
+        )
         .with_state(state);
 
     let addr = "0.0.0.0:3000";
