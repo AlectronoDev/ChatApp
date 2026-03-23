@@ -481,6 +481,71 @@ These limitations must be communicated clearly in the UI at signup.
 
 ---
 
+## Ratchet State Persistence Contract
+
+This section documents the invariants the server guarantees and the procedure
+clients **must** follow to keep Double Ratchet session state consistent across
+retries, crashes, and concurrent device instances.
+
+### Server guarantees
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| **Idempotent message submission** | Clients supply a client-generated UUID v7 `batch_id` in every send request. The server returns the original response without inserting duplicate envelopes if it has already accepted that `batch_id` from the same sender in the same thread/channel. |
+| **All-or-nothing envelope batch** | All envelopes in one send are inserted inside a single database transaction. A crash mid-insert rolls back to zero rows — no partial batches are visible to recipients. |
+| **Encrypted session state backup** | `PUT /devices/{my}/ratchet-sessions/{peer}` accepts an opaque client-encrypted blob and stores it server-side with an optimistic-lock version counter. The server cannot read, validate, or transform the blob. |
+| **Version-safe state updates** | The PUT endpoint requires the client to supply the last-read `expected_version`. If a concurrent write occurred since the last read, the server returns **409 Conflict**; the client must re-read and retry. |
+| **Cascade cleanup** | When a device is deleted, all its session state records are deleted via `ON DELETE CASCADE`. |
+
+### Correct send procedure (atomic crash recovery)
+
+```
+1.  Generate a fresh UUID v7  →  batch_id
+2.  Read current ratchet state version from server (or use in-memory state)
+3.  Advance ratchet → encrypt plaintext → hold ciphertext in memory
+4.  POST /dms/{thread}/messages  { batch_id, envelopes: [ciphertext] }
+        • If network error or crash → retry step 4 with the SAME batch_id
+        • The server de-duplicates; the retry is a no-op
+5.  On HTTP 2xx → encrypt new RatchetSession state with device storage key
+6.  PUT /devices/{my}/ratchet-sessions/{peer}  { expected_version, encrypted_state }
+        • If 409 Conflict → another instance wrote concurrently
+              → re-read, decide how to merge, retry step 6
+        • If success → persist confirmed; done
+```
+
+If a crash occurs between steps 4 and 6:
+- On recovery, retry step 4 with the same `batch_id` → server returns 200 idempotently.
+- Proceed to step 6. The session state backup is updated to reflect the now-confirmed message.
+
+### Why deterministic re-encryption is safe
+
+The Double Ratchet KDF chain is deterministic: calling `encrypt()` from the
+same session state with the same plaintext always produces the same ciphertext.
+This means crash-and-retry (restore checkpoint → re-encrypt → re-submit) yields
+a byte-for-bit identical envelope. The server's `batch_id` deduplication ensures
+the recipient sees exactly one copy regardless of how many times the sender
+retries. See `crash_recovery_produces_identical_ciphertext` in the test suite.
+
+### Replay and state-restore attacks
+
+A replayed ciphertext delivered to a restored session is rejected by the
+ChaCha20-Poly1305 AEAD tag check: after the receive chain has advanced past a
+given `n`, the message key for that `n` is either consumed or no longer
+derivable from the current chain key. Attempting to decrypt with the wrong key
+fails with `CryptoError::DecryptionFailed`. See `restore_then_replay_is_rejected`
+in the test suite.
+
+### Bounded skipped-key cache
+
+`MAX_SKIP = 1000` limits how far ahead the receive chain can advance to
+cache skipped-message keys. If more than 1000 consecutive messages are skipped,
+`RatchetSession::decrypt` returns `CryptoError::TooManySkippedMessages`. This
+is an application-level error; the client should alert the user that out-of-order
+delivery has exceeded safe limits (likely an active attack or extreme delivery
+failure) and offer a session reset.
+
+---
+
 ## What Is NOT Encrypted
 
 The following metadata travels in plaintext (to the server and any network

@@ -159,6 +159,12 @@ pub struct SendMessageRequest {
     /// The sender's own device ID — validated server-side to belong to the
     /// authenticated user.
     pub sender_device_id: Uuid,
+    /// Client-generated UUID v7 used as an idempotency key. If the server has
+    /// already accepted a batch with this ID from the same sender in the same
+    /// thread, it returns the original response without inserting duplicates.
+    /// Clients must generate a fresh UUID v7 for each new logical message and
+    /// reuse it on every retry of the same message.
+    pub batch_id: Uuid,
     pub envelopes: Vec<OutboundEnvelope>,
 }
 
@@ -371,6 +377,40 @@ pub struct UpdateProfileRequest {
 #[derive(Debug, Deserialize)]
 pub struct DeleteAccountRequest {
     pub password: String,
+}
+
+// ─── Ratchet session state storage ───────────────────────────────────────────
+
+/// Request body for creating or updating an encrypted ratchet session state
+/// record on the server.
+///
+/// The client encrypts the serialized `RatchetSession` with a key that never
+/// leaves the device before uploading. The server stores and returns this blob
+/// verbatim and cannot read or validate its contents.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PutRatchetSessionRequest {
+    /// The version number the client last read from the server for this session.
+    /// For the initial creation of a session record, use `0`.
+    /// The server rejects the request with 409 Conflict if the stored version
+    /// no longer matches — indicating a concurrent update from another client
+    /// instance. The client must re-read the current state and retry.
+    pub expected_version: i64,
+    /// Client-side encrypted session state blob, base64-encoded.
+    /// Maximum size: 64 KiB.
+    pub encrypted_state: String,
+}
+
+/// Returned by `GET` and `PUT` ratchet-session endpoints.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RatchetSessionResponse {
+    /// Monotonically increasing version number. Incremented by 1 on every
+    /// successful PUT. Use this as `expected_version` in the next PUT.
+    pub version: i64,
+    /// The encrypted state blob. Present on GET responses; absent on PUT
+    /// responses (the client already has the new state it just uploaded).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_state: Option<String>,
+    pub updated_at: DateTime<Utc>,
 }
 
 // ─── Channel messages ─────────────────────────────────────────────────────────

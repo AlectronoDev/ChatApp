@@ -58,6 +58,12 @@ async fn main() -> anyhow::Result<()> {
         )
         // Public identity keys for a single device (no prekey consumption)
         .route("/devices/{id}/info", get(routes::devices::get_device_public_info))
+        // Encrypted ratchet session state backup (opaque server-side store)
+        .route(
+            "/devices/{my_device_id}/ratchet-sessions/{peer_device_id}",
+            get(routes::sessions::get_ratchet_session)
+                .put(routes::sessions::put_ratchet_session),
+        )
         // User search, lookup, and profile — static segments before /{username}
         .route("/users/search", get(routes::users::search_users))
         .route("/users/{username}", get(routes::users::get_user))

@@ -106,7 +106,31 @@ pub async fn send_channel_message(
         ));
     }
 
-    let batch_id = Uuid::now_v7();
+    // ── Idempotency check ─────────────────────────────────────────────────────
+    //
+    // Clients must supply a UUID v7 batch_id. A retry with the same batch_id
+    // returns the original response without inserting duplicate envelopes.
+
+    let batch_id = req.batch_id;
+
+    let existing_created_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT created_at FROM channel_envelopes \
+         WHERE batch_id = $1 AND channel_id = $2 AND sender_user_id = $3 LIMIT 1",
+    )
+    .bind(batch_id)
+    .bind(channel_id)
+    .bind(auth.user_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some(created_at) = existing_created_at {
+        tracing::debug!(
+            batch_id = %batch_id,
+            "idempotent re-submit of channel batch — returning original response"
+        );
+        return Ok(Json(SendMessageResponse { batch_id, created_at }));
+    }
+
     let created_at = chrono::Utc::now();
 
     let mut tx = state.db.begin().await?;

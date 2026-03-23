@@ -267,9 +267,35 @@ pub async fn send_message(
         }
     }
 
+    // ── Idempotency check ─────────────────────────────────────────────────────
+    //
+    // If the sender already submitted this batch_id for this thread, return
+    // the original response. This makes retries safe: re-sending with the same
+    // batch_id never creates duplicate envelopes, so the recipient's ratchet
+    // counter cannot be corrupted by a network retry.
+
+    let batch_id = req.batch_id;
+
+    let existing_created_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT created_at FROM message_envelopes \
+         WHERE batch_id = $1 AND thread_id = $2 AND sender_user_id = $3 LIMIT 1",
+    )
+    .bind(batch_id)
+    .bind(thread_id)
+    .bind(auth.user_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some(created_at) = existing_created_at {
+        tracing::debug!(
+            batch_id = %batch_id,
+            "idempotent re-submit of DM batch — returning original response"
+        );
+        return Ok(Json(SendMessageResponse { batch_id, created_at }));
+    }
+
     // ── Store all envelopes atomically ────────────────────────────────────────
 
-    let batch_id = Uuid::now_v7();
     let created_at = chrono::Utc::now();
 
     let mut tx = state.db.begin().await?;
