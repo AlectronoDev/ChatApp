@@ -96,10 +96,10 @@ is addressed by MLS epoch advances in server/channel messaging.
 |---|---|
 | Message confidentiality against server | E2EE; server only stores ciphertext |
 | Transport confidentiality | TLS 1.3 (rustls) |
-| Message integrity and authenticity | Authenticated encryption (AEAD) + sender signing |
+| Message integrity and authenticity | ChaCha20-Poly1305 AEAD — the authentication tag covers both ciphertext and the header AAD, binding them cryptographically. Explicit Ed25519 per-message signing is not yet implemented; authentication is provided solely by the AEAD. |
 | Forward secrecy for DMs | Double Ratchet — each message advances ratchet state |
-| Forward secrecy for group/channel messages | MLS epoch keys; old epoch keys are deleted after advancing |
-| Break-in recovery for groups | MLS UpdatePath forces new key material that the removed device cannot derive |
+| Forward secrecy for group/channel messages | MLS epoch keys; old epoch keys are deleted after advancing. **MLS is not yet implemented** — see Implementation Status below. |
+| Break-in recovery for groups | MLS UpdatePath forces new key material that the removed device cannot derive. **MLS is not yet implemented** — see Implementation Status below. |
 | Password confidentiality at rest | Argon2id with a high cost parameter; only the verifier is stored |
 | Multi-device isolation | Each device holds independent keypairs; compromise of one device does not expose another device's keys |
 
@@ -147,8 +147,41 @@ to the server.
 
 - A user can remove a registered device from their account via an authenticated
   API call from another trusted device.
-- Removing a device from a DM session or group/channel triggers key material
-  rotation (MLS UpdatePath) so the removed device cannot decrypt future
-  messages.
+- **Current behavior:** Removing a device deletes the device record and all its
+  key material from the server. This prevents the device from being used as a
+  key-bundle target for new session initiations and stops the server from
+  delivering further messages to it. It does **not** yet provide cryptographic
+  forward exclusion from ongoing DM sessions — the removed device retains any
+  previously established Double Ratchet session state locally.
+- **Required future work:** After device removal, remaining participants in DM
+  threads should consider their existing ratchet sessions with that device
+  potentially compromised and re-key. For channels, MLS epoch advancement
+  (UpdatePath/Commit) will enforce cryptographic exclusion once MLS is
+  implemented.
 - The server enforces that key packages are only uploaded by the authenticated
   device owner.
+
+---
+
+## Implementation Status
+
+This section documents which security guarantees are fully realized in the
+current codebase and which are targeted but not yet implemented.
+
+| Component | Status | Notes |
+|---|---|---|
+| X3DH session establishment | **Implemented** | `crates/crypto_core/src/x3dh.rs` |
+| Double Ratchet (DM messages) | **Implemented** | `crates/crypto_core/src/double_ratchet.rs` |
+| Device registration key validation | **Implemented** | Signature and encoding checks in `services/api/src/routes/devices.rs` |
+| MLS channel encryption | **Not yet implemented** | Planned; see `docs/protocol.md` for intended design |
+| Channel message forward secrecy | **Not yet implemented** | Requires MLS |
+| Break-in recovery for groups | **Not yet implemented** | Requires MLS |
+| Cryptographic device removal (DM) | **Not yet implemented** | Current removal is DB-only |
+| Cryptographic device removal (channel) | **Not yet implemented** | Requires MLS epoch advance |
+| Explicit Ed25519 per-message signing | **Not yet implemented** | AEAD auth tag provides message authenticity currently |
+| DR integration into API routes | **Not yet implemented** | Backend routes still use placeholder paths |
+
+Every claim in the Security Guarantees table above reflects the design target.
+Rows marked "Not yet implemented" above describe gaps between the current code
+and the full design. These gaps are tracked in
+`.cursor/plans/e2ee-security-hardening-plan_0019e18b.plan.md`.

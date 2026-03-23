@@ -245,6 +245,7 @@ impl ApiClient {
         Ok(())
     }
 
+    #[allow(unused)]
     pub fn leave_server(&self, token: &str, server_id: Uuid, user_id: Uuid) -> Result<()> {
         self.client
             .delete(format!(

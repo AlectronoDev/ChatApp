@@ -4,15 +4,17 @@
 //! derivation must go through this crate. No other crate should contain
 //! raw cryptographic logic.
 //!
-//! ## Protocol note
-//! This implements a *simplified* session model for the CLI demo:
-//! - X25519 ECDH to establish a shared secret between two device DH keys
-//! - HKDF-SHA256 to derive a symmetric session key
-//! - ChaCha20-Poly1305 AEAD for message encryption
-//!
-//! This provides real confidentiality and authenticity but NOT forward secrecy
-//! (no Double Ratchet) and NOT X3DH ephemeral key exchange. Full X3DH + Double
-//! Ratchet will be layered in once the core infrastructure is validated.
+//! ## Protocol
+//! - **X3DH** (`x3dh` module): Extended Triple Diffie-Hellman key agreement,
+//!   following the Signal X3DH specification, used to establish a shared
+//!   secret between two devices without prior contact.
+//! - **Double Ratchet** (`double_ratchet` module): Signal Double Ratchet
+//!   algorithm providing forward secrecy and break-in recovery for DMs.
+//! - **Legacy ECDH** (this module): Static ECDH session key derivation kept
+//!   for reference only; all new code should use X3DH + Double Ratchet.
+
+pub mod double_ratchet;
+pub mod x3dh;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use chacha20poly1305::{
@@ -49,6 +51,21 @@ pub enum CryptoError {
 
     #[error("key derivation failed")]
     KeyDerivation,
+
+    /// The peer skipped more messages than the allowed safety limit. Either
+    /// the sender is misbehaving or there is a severe message-loss event.
+    #[error("too many skipped messages (limit: {limit})")]
+    TooManySkippedMessages { limit: u32 },
+
+    /// An operation was attempted on a Double Ratchet session that has not
+    /// been fully initialized yet (e.g. the receiver trying to send before
+    /// receiving the initiator's first message).
+    #[error("ratchet session is not yet fully initialized for this operation")]
+    SessionNotInitialized,
+
+    /// Session state could not be serialized or deserialized.
+    #[error("session serialization error: {0}")]
+    Serialization(String),
 }
 
 // ─── Key material ─────────────────────────────────────────────────────────────
