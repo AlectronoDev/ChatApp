@@ -12,7 +12,7 @@ pub struct Config {
     /// Maximum login/signup/recovery attempts per username per second.
     /// Limits password brute-forcing and recovery-code guessing.
     /// Default: 1 req/s. Set via `AUTH_RATE_LIMIT_RPS`.
-    #[allow(dead_code)] // read in state.rs; rust-analyzer misses cross-file refs
+    #[allow(unused)] // read in state.rs; rust-analyzer misses cross-file refs
     pub auth_rate_limit_rps: u32,
 }
 
