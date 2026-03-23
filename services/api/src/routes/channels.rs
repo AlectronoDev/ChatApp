@@ -14,6 +14,10 @@ use protocol::{
 };
 
 /// Named row type so all three pagination branches share the same return type.
+///
+/// Channel envelopes do not carry X3DH bootstrap data — channels will use MLS
+/// once that phase is implemented. `InboundMessage.x3dh_init` is therefore
+/// always `None` for channel messages.
 #[derive(sqlx::FromRow)]
 struct ChannelMessageRow {
     batch_id: Uuid,
@@ -23,6 +27,9 @@ struct ChannelMessageRow {
     created_at: DateTime<Utc>,
     delivered_at: Option<DateTime<Utc>>,
 }
+
+/// The only protocol version currently accepted for channel messages.
+const SUPPORTED_PROTOCOL_VERSION: u8 = 1;
 
 // ─── Send a message to a channel ─────────────────────────────────────────────
 
@@ -41,9 +48,25 @@ pub async fn send_channel_message(
         ));
     }
     for env in &req.envelopes {
+        if env.protocol_version != SUPPORTED_PROTOCOL_VERSION {
+            return Err(AppError::BadRequest(format!(
+                "Unsupported protocol_version {}; only version {} is accepted.",
+                env.protocol_version, SUPPORTED_PROTOCOL_VERSION,
+            )));
+        }
+        if env.ciphertext.is_empty() {
+            return Err(AppError::BadRequest("ciphertext must not be empty.".into()));
+        }
         if env.ciphertext.len() > 131_072 {
             return Err(AppError::BadRequest(
                 "Individual envelope ciphertext must not exceed 128 KB.".into(),
+            ));
+        }
+        // Channels do not use X3DH bootstrap — that is a DM-only concept.
+        // MLS will handle channel session establishment when implemented.
+        if env.x3dh_init.is_some() {
+            return Err(AppError::BadRequest(
+                "x3dh_init is not valid for channel messages.".into(),
             ));
         }
     }
@@ -252,7 +275,12 @@ pub async fn fetch_channel_messages(
             batch_id: r.batch_id,
             sender_user_id: r.sender_user_id,
             sender_device_id: r.sender_device_id,
+            // Channel envelopes are versioned 1 for now; MLS will introduce
+            // a new protocol type when channel encryption is implemented.
+            protocol_version: 1,
             ciphertext: r.ciphertext.clone(),
+            // Channels do not use X3DH — x3dh_init is always absent here.
+            x3dh_init: None,
             created_at: r.created_at,
             delivered_at: r.delivered_at,
         })

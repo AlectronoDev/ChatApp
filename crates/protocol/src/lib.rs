@@ -114,12 +114,43 @@ pub struct DmThreadSummary {
 
 // ─── Messages ─────────────────────────────────────────────────────────────────
 
+/// Public key material included with the first Double Ratchet message of a new
+/// X3DH session. Absent on all subsequent ratchet messages in the same session.
+///
+/// The responder uses these fields to reproduce the initiator's DH operations
+/// and derive the same shared root secret (`SK`). All byte arrays are
+/// base64-encoded (standard alphabet with padding), matching the encoding used
+/// by `crates/crypto_core`.
+///
+/// See `docs/protocol.md` §"X3DH bootstrap message format" for the exact layout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct X3dhInitData {
+    /// base64-encoded 32-byte X25519 identity DH public key of the initiator.
+    pub ik_dh_pub: String,
+    /// base64-encoded 32-byte X25519 ephemeral public key of the initiator.
+    pub ek_pub: String,
+    /// `key_id` of the responder's signed prekey that the initiator used.
+    pub spk_id: i32,
+    /// `key_id` of the responder's one-time prekey used, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub otpk_id: Option<i32>,
+}
+
 /// One per-device ciphertext envelope within a single logical message send.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OutboundEnvelope {
     pub recipient_device_id: Uuid,
-    /// base64-encoded ciphertext produced by the client's Double Ratchet session.
+    /// Protocol version. Must be `1`. Future incompatible protocol changes
+    /// increment this; the server rejects any unrecognized version.
+    pub protocol_version: u8,
+    /// Complete Double Ratchet message (header + AEAD ciphertext), base64-encoded.
+    /// Opaque to the server — it stores and relays this blob without interpretation.
     pub ciphertext: String,
+    /// Present only on the very first envelope of a new X3DH session between
+    /// this sender device and this recipient device. Absent for all subsequent
+    /// ratchet messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x3dh_init: Option<X3dhInitData>,
 }
 
 /// A client sends one logical message as a batch of per-device envelopes.
@@ -145,8 +176,13 @@ pub struct InboundMessage {
     pub batch_id: Uuid,
     pub sender_user_id: Uuid,
     pub sender_device_id: Uuid,
-    /// base64-encoded ciphertext for this device's Double Ratchet session.
+    /// Protocol version as stored when the message was sent.
+    pub protocol_version: u8,
+    /// Complete Double Ratchet message for this device's session, base64-encoded.
     pub ciphertext: String,
+    /// Present if this envelope initiated a new X3DH session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x3dh_init: Option<X3dhInitData>,
     pub created_at: DateTime<Utc>,
     /// Set when this envelope was acknowledged by the recipient device.
     pub delivered_at: Option<DateTime<Utc>>,
@@ -175,7 +211,8 @@ pub struct SignedPrekey {
     pub key_id: i32,
     /// base64-encoded X25519 public key.
     pub public_key: String,
-    /// base64-encoded Ed25519 signature over `key_id || public_key`.
+    /// base64-encoded Ed25519 signature over `key_id_be32 ‖ public_key_bytes`
+    /// (4-byte big-endian key ID concatenated with the 32-byte X25519 public key).
     pub signature: String,
 }
 
