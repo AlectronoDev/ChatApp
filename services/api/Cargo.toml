@@ -26,6 +26,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 
 governor = { workspace = true }
+subtle = { workspace = true }
 
 protocol = { path = "../../crates/protocol" }
 crypto_core = { path = "../../crates/crypto_core" }

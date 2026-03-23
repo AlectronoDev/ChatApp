@@ -5,6 +5,7 @@ use argon2::{
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
 use rand::RngCore;
+use subtle::ConstantTimeEq;
 
 use crate::{
     error::AppError,
@@ -16,6 +17,12 @@ use protocol::{
     UserProfile,
 };
 
+/// Maximum active (non-revoked, non-expired) sessions allowed per user.
+/// When the limit is reached, the caller must sign out of an existing session
+/// before they can sign in again. This prevents unbounded session accumulation
+/// from repeated logins without logout.
+const MAX_CONCURRENT_SESSIONS: i64 = 10;
+
 // ─── Signup ───────────────────────────────────────────────────────────────────
 
 pub async fn signup(
@@ -24,6 +31,13 @@ pub async fn signup(
 ) -> Result<(StatusCode, Json<SignupResponse>), AppError> {
     validate_username(&req.username)?;
     validate_password(&req.password)?;
+
+    // Rate-limit signup attempts per target username to slow mass account
+    // creation and username-squatting hammers.
+    if state.auth_rate_limiter.check_key(&req.username).is_err() {
+        tracing::warn!(username = %req.username, "signup rate limit exceeded");
+        return Err(AppError::TooManyRequests);
+    }
 
     let password_hash = hash_password(req.password).await?;
     let (recovery_code, recovery_code_hash) = generate_recovery_code();
@@ -76,20 +90,63 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
+    // ── Rate limit ────────────────────────────────────────────────────────────
+    //
+    // Applied before any DB work so a brute-force loop is throttled as early
+    // as possible. Keyed by username so an attack against one account does not
+    // exhaust quota for others.
+    if state.auth_rate_limiter.check_key(&req.username).is_err() {
+        tracing::warn!(username = %req.username, "login rate limit exceeded");
+        return Err(AppError::TooManyRequests);
+    }
+
+    // ── Lookup and verify ─────────────────────────────────────────────────────
+    //
+    // Return Unauthorized regardless of whether the username exists to prevent
+    // account enumeration via differing error codes.
     let user = sqlx::query!(
         "SELECT id, username, password_hash FROM users WHERE username = $1",
         req.username,
     )
     .fetch_optional(&state.db)
     .await?
-    // Return the same error whether the username exists or not to prevent
-    // username enumeration.
     .ok_or(AppError::Unauthorized)?;
 
     let password_valid = verify_password(req.password, user.password_hash).await?;
     if !password_valid {
+        tracing::warn!(
+            username = %req.username,
+            "failed login attempt — incorrect password"
+        );
         return Err(AppError::Unauthorized);
     }
+
+    // ── Session cap ───────────────────────────────────────────────────────────
+    //
+    // Prevents unbounded session accumulation from repeated logins without
+    // logout. The check runs after successful auth so an unauthenticated probe
+    // cannot infer whether an account has reached its session limit.
+    let session_count: i64 = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sessions \
+         WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()",
+    )
+    .bind(user.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if session_count >= MAX_CONCURRENT_SESSIONS {
+        tracing::warn!(
+            user_id      = %user.id,
+            session_count = session_count,
+            "login rejected: concurrent session cap reached"
+        );
+        return Err(AppError::BadRequest(format!(
+            "Maximum of {MAX_CONCURRENT_SESSIONS} concurrent sessions reached. \
+             Sign out of an existing session first."
+        )));
+    }
+
+    // ── Issue session ─────────────────────────────────────────────────────────
 
     let (token, token_hash) = generate_session_token();
     let expires_at = Utc::now() + chrono::Duration::days(state.config.session_duration_days);
@@ -137,7 +194,24 @@ pub async fn recover(
     State(state): State<AppState>,
     Json(req): Json<RecoverRequest>,
 ) -> Result<Json<RecoverResponse>, AppError> {
+    // ── Security invariant: recovery ≠ device key recovery ───────────────────
+    //
+    // Account recovery grants a new session token and a new account password.
+    // It does NOT restore any device private keys, ratchet session states, or
+    // historical ciphertext. Old message history is permanently inaccessible
+    // after a device is lost — this is by design (forward secrecy guarantee).
+    // The recovered account can only read NEW messages on NEW devices going
+    // forward.
+
     validate_password(&req.new_password)?;
+
+    // Rate-limit recovery attempts per username to slow recovery-code guessing.
+    // Although a 128-bit random code makes guessing computationally infeasible,
+    // limiting attempts is defence in depth.
+    if state.auth_rate_limiter.check_key(&req.username).is_err() {
+        tracing::warn!(username = %req.username, "recovery rate limit exceeded");
+        return Err(AppError::TooManyRequests);
+    }
 
     let user = sqlx::query!(
         "SELECT id, recovery_code_hash FROM users WHERE username = $1",
@@ -145,20 +219,31 @@ pub async fn recover(
     )
     .fetch_optional(&state.db)
     .await?
-    // Same error regardless of whether the username exists, to prevent enumeration.
+    // Return the same error whether the username exists or not to prevent
+    // account enumeration.
     .ok_or(AppError::Unauthorized)?;
 
-    // Recovery codes are high-entropy random tokens, so SHA-256 comparison is
-    // sufficient here (no need for Argon2id).
+    // Constant-time comparison of the SHA-256 hex hashes prevents timing
+    // side-channels that could otherwise leak partial information about the
+    // stored hash to an attacker who can measure response latency.
     let submitted_hash = sha256_hex(&req.recovery_code);
-    if submitted_hash != user.recovery_code_hash {
+    let code_valid = bool::from(
+        submitted_hash
+            .as_bytes()
+            .ct_eq(user.recovery_code_hash.as_bytes()),
+    );
+    if !code_valid {
+        tracing::warn!(
+            username = %req.username,
+            "failed recovery attempt — invalid recovery code"
+        );
         return Err(AppError::Unauthorized);
     }
 
     let new_password_hash = hash_password(req.new_password).await?;
     let (new_recovery_code, new_recovery_code_hash) = generate_recovery_code();
     let (token, token_hash) = generate_session_token();
-    let expires_at = Utc::now() + chrono::Duration::days(30);
+    let expires_at = Utc::now() + chrono::Duration::days(state.config.session_duration_days);
 
     let mut tx = state.db.begin().await?;
 
@@ -173,7 +258,9 @@ pub async fn recover(
     .execute(&mut *tx)
     .await?;
 
-    // Revoke all existing sessions since the password was reset.
+    // Revoke ALL existing sessions: if the account was compromised, the
+    // attacker's session(s) are immediately invalidated. The caller receives
+    // a fresh session below.
     sqlx::query!(
         "UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
         user.id,
@@ -246,6 +333,8 @@ fn validate_password(password: &str) -> Result<(), AppError> {
             "Password must be at least 8 characters.".into(),
         ));
     }
+    // Upper bound prevents Argon2 DoS via arbitrarily long inputs. Passwords
+    // longer than 128 bytes provide no practical security improvement.
     if password.len() > 128 {
         return Err(AppError::BadRequest(
             "Password must not exceed 128 characters.".into(),
@@ -258,6 +347,13 @@ fn validate_password(password: &str) -> Result<(), AppError> {
 
 /// Hash a password with Argon2id. Runs in a blocking thread to avoid
 /// stalling the async runtime during the intentionally expensive hash.
+///
+/// Parameters (argon2 crate v0.5 defaults, OWASP-compliant option 2):
+///   algorithm  : Argon2id (hybrid, resistant to side-channel and GPU attacks)
+///   version    : 0x13 (19, current)
+///   memory     : 19 456 KiB (19 MiB)  ≥ OWASP minimum of 19 MiB
+///   iterations : 2                    ≥ OWASP minimum for 19 MiB
+///   parallelism: 1
 async fn hash_password(password: String) -> Result<String, AppError> {
     tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);
@@ -294,7 +390,8 @@ fn generate_session_token() -> (String, String) {
 }
 
 /// Generate a human-readable one-time recovery code and its SHA-256 hash.
-/// Format: `XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX` (32 uppercase hex chars).
+/// Format: `XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX` (32 uppercase hex chars,
+/// 128 bits of entropy — makes guessing computationally infeasible).
 fn generate_recovery_code() -> (String, String) {
     let mut bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
@@ -303,4 +400,3 @@ fn generate_recovery_code() -> (String, String) {
     let hash = sha256_hex(&code);
     (code, hash)
 }
-
