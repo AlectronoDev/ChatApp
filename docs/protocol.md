@@ -489,13 +489,15 @@ retries, crashes, and concurrent device instances.
 
 ### Server guarantees
 
-| Guarantee | Mechanism |
-|-----------|-----------|
-| **Idempotent message submission** | Clients supply a client-generated UUID v7 `batch_id` in every send request. The server returns the original response without inserting duplicate envelopes if it has already accepted that `batch_id` from the same sender in the same thread/channel. |
-| **All-or-nothing envelope batch** | All envelopes in one send are inserted inside a single database transaction. A crash mid-insert rolls back to zero rows — no partial batches are visible to recipients. |
-| **Encrypted session state backup** | `PUT /devices/{my}/ratchet-sessions/{peer}` accepts an opaque client-encrypted blob and stores it server-side with an optimistic-lock version counter. The server cannot read, validate, or transform the blob. |
-| **Version-safe state updates** | The PUT endpoint requires the client to supply the last-read `expected_version`. If a concurrent write occurred since the last read, the server returns **409 Conflict**; the client must re-read and retry. |
-| **Cascade cleanup** | When a device is deleted, all its session state records are deleted via `ON DELETE CASCADE`. |
+
+| Guarantee                          | Mechanism                                                                                                                                                                                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Idempotent message submission**  | Clients supply a client-generated UUID v7 `batch_id` in every send request. The server returns the original response without inserting duplicate envelopes if it has already accepted that `batch_id` from the same sender in the same thread/channel. |
+| **All-or-nothing envelope batch**  | All envelopes in one send are inserted inside a single database transaction. A crash mid-insert rolls back to zero rows — no partial batches are visible to recipients.                                                                                |
+| **Encrypted session state backup** | `PUT /devices/{my}/ratchet-sessions/{peer}` accepts an opaque client-encrypted blob and stores it server-side with an optimistic-lock version counter. The server cannot read, validate, or transform the blob.                                        |
+| **Version-safe state updates**     | The PUT endpoint requires the client to supply the last-read `expected_version`. If a concurrent write occurred since the last read, the server returns **409 Conflict**; the client must re-read and retry.                                           |
+| **Cascade cleanup**                | When a device is deleted, all its session state records are deleted via `ON DELETE CASCADE`.                                                                                                                                                           |
+
 
 ### Correct send procedure (atomic crash recovery)
 
@@ -514,6 +516,7 @@ retries, crashes, and concurrent device instances.
 ```
 
 If a crash occurs between steps 4 and 6:
+
 - On recovery, retry step 4 with the same `batch_id` → server returns 200 idempotently.
 - Proceed to step 6. The session state backup is updated to reflect the now-confirmed message.
 
@@ -574,12 +577,14 @@ internal structure. All cryptographic state (ratchet trees, epoch key
 schedules, group secrets) is held exclusively by client devices.
 
 **What the server knows (non-secret):**
+
 - Device IDs in the current member list (device UUIDs only; no keys)
 - The current epoch number
 - Message arrival order (server-assigned UUID v7 IDs)
 - Message type ("application" or "commit")
 
 **What the server never knows:**
+
 - Group encryption keys or ratchet-tree secrets
 - KeyPackage private keys
 - Welcome message contents (encrypted to recipient HPKE init key)
@@ -596,21 +601,18 @@ suite until this protocol is updated.
 ### 9.3 KeyPackage Lifecycle
 
 1. **Upload** — Each device periodically uploads a batch of KeyPackages
-   (`POST /devices/{id}/mls-key-packages`). A KeyPackage contains the device's
+  (`POST /devices/{id}/mls-key-packages`). A KeyPackage contains the device's
    identity LeafNode and a fresh HPKE init key. Upload bounds: 1–100 per batch.
-
 2. **Claim** — Before inviting a device to a new group, the inviter fetches one
-   KeyPackage per target device (`GET /users/{username}/mls-key-packages/claim`).
+  KeyPackage per target device (`GET /users/{username}/mls-key-packages/claim`).
    The server atomically marks each claimed KeyPackage as consumed; it cannot be
    reused (single-use, like OTPKs in X3DH).
-
 3. **Replenishment** — Clients SHOULD monitor the count of unclaimed KeyPackages
-   remaining for their own devices and upload more before the supply is
+  remaining for their own devices and upload more before the supply is
    exhausted. If a device has no KeyPackages available it cannot be added to new
    groups until it replenishes.
-
 4. **Expiry (future)** — A future migration will add a `valid_until` timestamp
-   to `mls_key_packages`. The DS will reject claims for expired KeyPackages.
+  to `mls_key_packages`. The DS will reject claims for expired KeyPackages.
    Clients MUST include a `Lifetime` extension in KeyPackages per RFC 9420 §7.2.
 
 ### 9.4 Group Initialization
@@ -624,13 +626,15 @@ Body: `InitMlsGroupRequest` containing the creator's device ID, the opaque MLS
 message, and Welcome messages for each non-creator initial member.
 
 The server validates:
+
 - The channel exists and the creator is a server member.
 - All initial member device IDs belong to server members.
 - Blob sizes are within bounds (`MAX_MLS_MESSAGE_B64_BYTES` = 64 KiB,
-  `MAX_KEY_PACKAGE_B64_BYTES` = 8 KiB).
+`MAX_KEY_PACKAGE_B64_BYTES` = 8 KiB).
 - At most one MLS group per channel (unique constraint).
 
 The server atomically:
+
 1. Creates the `mls_groups` row at epoch 0.
 2. Inserts the initial member list into `mls_group_members`.
 3. Stores the initial Commit in `mls_messages`.
@@ -652,6 +656,7 @@ the same epoch. The first writer wins; subsequent conflicting Commits receive
 `409 Conflict`. This prevents forked group state.
 
 After acceptance:
+
 1. The Commit is stored in `mls_messages`.
 2. The member list in `mls_group_members` is replaced atomically.
 3. Welcome messages are stored for newly added devices.
@@ -705,3 +710,146 @@ The `POST /channels/{id}/messages` endpoint sends per-device encrypted
 ciphertexts using a pre-MLS static-ECDH path. New channels SHOULD use the MLS
 endpoints above instead. The legacy path will be deprecated once client
 implementations are complete (phase 5).
+
+---
+
+## 10. Channel history handoff (intentional re-share)
+
+This section defines how a **new server member** can gain access to **past**
+channel ciphertext in a way that complies with the threat model. **Newly added
+devices cannot decrypt pre-join history unless that history is intentionally
+re-shared** by a party who already could decrypt it. The server never decrypts,
+re-wraps with server-held keys, or learns plaintext.
+
+Independently, a **server-level flag** lets the **server owner** decide whether
+that intentional handoff path is **allowed at all** for channels in that server.
+Any **server member** whose device **already received** the relevant ciphertext
+may act as **donor** (decrypt locally, re-encrypt for the new member) when the
+flag is on — including members who joined before the current owner, so history
+from before an ownership transfer can still be shared. Cryptography is unchanged;
+the flag only gates whether the relay accepts handoff uploads.
+
+### 10.1 Server policy: past history for new members (owner-only)
+
+Each server stores a boolean `allow_past_channel_history_for_new_members`
+(exact field name to match `protocol` types and JSON when implemented).
+
+
+| Value             | Meaning                                                                                                                                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `false` (default) | History handoff is **disabled**. The API MUST reject any history-handoff request (`403 Forbidden` or equivalent). Clients SHOULD read this flag before offering “share past messages” UI.                            |
+| `true`            | **Current server members** may submit handoff batches (10.4–10.6) from their own device(s), subject to rate limits and membership checks. Still **no** server-side plaintext or merge — only explicit donor uploads. |
+
+
+**Who may change the flag:** only the **server owner** (`role = owner` in
+`server_members`). Other members MUST receive `403 Forbidden` if they call the
+update endpoint.
+
+**Who may read the flag:** any server member via normal server details
+responses, so UIs can show the toggle state (owner) or whether history sharing
+is possible (everyone).
+
+**Scope:** one flag per **server**; it applies to **all channels** in that
+server. Per-channel overrides are out of scope unless added in a future protocol
+revision.
+
+**Compliance:** Pre-join decrypt is never automatic: the owner enables the
+**possibility** of handoff; donors who already hold decryptable ciphertext
+perform the re-share locally — preserving intentional re-share while allowing
+long-tenured members (not necessarily the current owner) to cover older
+history.
+
+### 10.2 Threat model
+
+
+| Role          | Responsibility                                                                                                                                                                                                                                                                                                                                               |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Donor**     | A client device belonging to a **current server member** who was able to receive the original channel ciphertext (typically: was a member at send time). The donor **opts in** to sharing (not silent). May be any member — not restricted to the server owner — so history from before the current owner joined can be re-shared by longer-tenured members. |
+| **Recipient** | The newly joined member’s registered device(s). History handoff creates **new** opaque envelope rows for these `recipient_device_id` values only.                                                                                                                                                                                                            |
+| **Server**    | Stores and relays ciphertext only. Enforces 10.1, verifies the authenticated user is a **server member**, and `sender_device_id` is owned by that user.                                                                                                                                                                                                      |
+
+
+**Forbidden:** automatic “full history” delivery on invite; any server-side
+decryption or plaintext handling.
+
+### 10.3 Why new members do not see old rows by default
+
+`channel_envelopes` stores one row per `(batch_id, recipient_device_id)`. Past
+batches only include devices that were members **at send time**. A user who
+joins later has **no** historical rows addressed to their devices until a
+**donor** (a member who can decrypt) uploads new envelopes targeting them.
+
+MLS (`mls_messages`) is similar in spirit: a new member’s client receives
+**Welcome** and current epoch state; **historical** application ciphertext used
+epoch secrets the new member never held. Readable history requires **intentional**
+export or re-encryption from a member who holds the keys, when §10.1 is enabled.
+
+### 10.4 Legacy per-device channel path (static-ECDH)
+
+Until MLS-only clients ship, channel messages may use the legacy path
+(`POST /channels/{id}/messages`).
+
+See §10.2 — **donor** is any member device that received the ciphertext. Steps:
+
+1. **Donor** (authenticated server member) selects a registered `sender_device_id`
+  they own and paginates `GET /channels/{id}/messages` for that `device_id`,
+   obtaining ciphertext decryptable with that device’s long-term DH material and
+   the usual channel AAD (see below).
+2. **Donor** decrypts **locally** to recover plaintext (and any inner framing
+  the app uses for sender display).
+3. **Donor** re-encrypts that plaintext to each of the **invitee’s** device
+  `identity_dh_key` values (fetched via the public key-bundle API), producing
+   one `OutboundEnvelope` per target device, using the **same AEAD and AAD**
+   conventions as ordinary channel sends.
+4. **Donor** submits the handoff via the dedicated history-handoff API (when
+  implemented). The server MUST verify: (a) §10.1 is `true` for the channel’s
+   server; (b) `auth.user_id` is a **member** of that server; (c) `sender_device_id`
+   is owned by `auth.user_id`.
+
+**AAD for channel messages** (legacy): the 16-byte `channel_id` UUID as raw
+bytes — identical for live sends and for handoff so decrypt logic is shared.
+
+**Idempotency:** each handoff batch uses a fresh client-generated `batch_id`
+(UUID v7); retries must reuse the same `batch_id` per the existing idempotency
+rules for channel sends.
+
+**Coverage:** a donor can only hand off messages their **own devices** received.
+To cover **all** past messages for a new member, multiple donors may each run
+handoff for batches they hold (e.g. a long-tenured member covers older traffic
+before the current owner joined).
+
+### 10.5 MLS channel path
+
+When a channel uses MLS application messages:
+
+- **Principle:** same as 10.2 — any **member** who holds the necessary epoch
+secrets / group state may **intentionally** produce new ciphertext for the
+invitee: re-encrypt **plaintext** recovered locally from old `MLSMessage`
+records, or use a **documented** export format (never via server decryption).
+- **Welcome alone** does not grant historical epoch decryption; do not assume
+post-join clients can derive old `application_secret` values without a
+re-share step from a member who can decrypt.
+- Wire format and HTTP mapping for MLS handoff batches will be specified
+alongside the `history-handoff` (or equivalent) endpoint when implemented;  
+until then, clients MUST NOT weaken 10.2 to “server merges history.” The  
+server MUST enforce 10.1 **and** donor membership and device ownership on
+every MLS handoff upload.
+
+### 10.6 Provenance and ordering (non-secret metadata)
+
+To show messages in **chronological** order rather than “all handoff at now,”
+implementations MAY attach **non-secret** provenance on handoff batches (e.g.
+original `batch_id` / `created_at` from the source message). These fields are
+**not** authenticated as strongly as the inner message body unless the
+application includes them inside the encrypted plaintext. Teams SHOULD document
+whether timeline display trusts server-supplied provenance or only in-band
+encrypted metadata.
+
+### 10.7 Abuse controls and observability
+
+Handoff uploads are **high volume** capable; the API MUST enforce per-user /
+per-channel rate limits and envelope count bounds. Audit logs MAY record
+handoff events (donor user id, channel id, invitee user id, envelope count) and
+MUST NOT include plaintext, keys, or ciphertext — see `docs/ops.md`.  
+Owner toggles of 10.1 SHOULD emit a separate audit event (actor user id,  
+server id, new boolean value).
