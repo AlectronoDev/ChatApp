@@ -3,14 +3,19 @@ use axum::{
     Json, Router,
 };
 use sqlx::postgres::PgPoolOptions;
+use tracing_subscriber::prelude::*;
 
+mod audit;
 mod config;
 mod error;
 mod extract;
+mod middleware;
 mod routes;
 mod state;
 
-use config::Config;
+use middleware as mw;
+
+use config::{Config, LogFormat};
 use protocol::HealthResponse;
 use state::AppState;
 
@@ -18,11 +23,39 @@ use state::AppState;
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let config = Config::from_env()?;
+
+    // ── Logging setup ─────────────────────────────────────────────────────────
+    //
+    // JSON format is recommended for production log aggregators (Loki, Datadog,
+    // etc.). Text format is the default for local development readability.
+    // Configure with LOG_FORMAT=json.
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
+    match config.log_format {
+        LogFormat::Json => {
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer().json())
+                .init();
+        }
+        LogFormat::Text => {
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer())
+                .init();
+        }
+    }
+
+    // ── HTTPS enforcement check ────────────────────────────────────────────────
+    //
+    // REQUIRE_HTTPS=false means no HSTS header is emitted. Warn loudly so this
+    // is never silently left off in production.
+    if !config.require_https {
+        tracing::warn!(
+            "REQUIRE_HTTPS is disabled — HSTS will not be sent. \
+             Set REQUIRE_HTTPS=true in all non-local deployments."
+        );
+    }
 
     let db = PgPoolOptions::new()
         .max_connections(20)
@@ -111,6 +144,12 @@ async fn main() -> anyhow::Result<()> {
             "/devices/{device_id}/mls/welcomes",
             get(routes::mls::fetch_mls_welcomes),
         )
+        // Security headers (X-Content-Type-Options, HSTS when require_https, etc.)
+        .layer(axum::middleware::from_fn_with_state(state.clone(), mw::security_headers))
+        // Request/response logging — outermost so it captures total latency.
+        // Logs method, path (no query string), status, latency. Never logs
+        // Authorization headers, request bodies, or response bodies.
+        .layer(axum::middleware::from_fn(mw::trace_requests))
         .with_state(state);
 
     let addr = "0.0.0.0:3000";

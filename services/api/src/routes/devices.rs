@@ -131,12 +131,7 @@ pub async fn register_device(
 
     tx.commit().await?;
 
-    tracing::info!(
-        user_id = %auth.user_id,
-        device_id = %device_id,
-        prekeys_uploaded = req.one_time_prekeys.len(),
-        "device registered"
-    );
+    crate::audit::device_registered(auth.user_id, device_id, req.one_time_prekeys.len());
 
     Ok((
         StatusCode::CREATED,
@@ -190,7 +185,7 @@ pub async fn delete_device(
         return Err(AppError::NotFound("Device not found.".into()));
     }
 
-    tracing::info!(user_id = %auth.user_id, device_id = %device_id, "device removed");
+    crate::audit::device_deleted(auth.user_id, device_id);
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -215,20 +210,9 @@ pub async fn get_user_key_bundles(
     // exhaustion expensive: at 2 req/s, draining 100 prekeys takes 50 seconds
     // and is trivially detectable in logs.
     if state.rate_limiter.check_key(&auth.user_id).is_err() {
-        tracing::warn!(
-            caller   = %auth.user_id,
-            username = %username,
-            "key-bundle rate limit exceeded — possible OTPK scraping attempt"
-        );
+        crate::audit::keys_bundle_rate_limited(auth.user_id, &username);
         return Err(AppError::TooManyRequests);
     }
-
-    // Audit log every fetch so operators can correlate with OTPK depletion.
-    tracing::info!(
-        caller   = %auth.user_id,
-        username = %username,
-        "key bundle fetch"
-    );
 
     let target = sqlx::query!(
         "SELECT id FROM users WHERE username = $1",
@@ -295,6 +279,7 @@ pub async fn get_user_key_bundles(
         });
     }
 
+    crate::audit::keys_bundle_fetched(auth.user_id, &username, bundles.len());
     Ok(Json(bundles))
 }
 

@@ -116,11 +116,7 @@ pub async fn claim_mls_key_packages(
 ) -> Result<Json<ClaimMlsKeyPackagesResponse>, AppError> {
     // Rate limit: same quota as X3DH key bundle fetches (prevents KP scraping).
     if state.rate_limiter.check_key(&auth.user_id).is_err() {
-        tracing::warn!(
-            requester = %auth.user_id,
-            target_username = %username,
-            "MLS KeyPackage claim rate limit exceeded"
-        );
+        crate::audit::keys_bundle_rate_limited(auth.user_id, &username);
         return Err(AppError::TooManyRequests);
     }
 
@@ -177,12 +173,7 @@ pub async fn claim_mls_key_packages(
 
     tx.commit().await?;
 
-    tracing::info!(
-        requester = %auth.user_id,
-        target_username = %username,
-        claimed_devices = claims.len(),
-        "claimed MLS KeyPackages"
-    );
+    crate::audit::keys_bundle_fetched(auth.user_id, &username, claims.len());
     Ok(Json(ClaimMlsKeyPackagesResponse { claims }))
 }
 
@@ -363,12 +354,11 @@ pub async fn init_mls_group(
 
     tx.commit().await?;
 
-    tracing::info!(
-        group_id = %group_id,
-        channel_id = %channel_id,
-        creator = %req.creator_device_id,
-        members = req.initial_member_device_ids.len(),
-        "MLS group initialized"
+    crate::audit::mls_group_initialized(
+        group_id,
+        channel_id,
+        req.creator_device_id,
+        req.initial_member_device_ids.len(),
     );
     Ok(Json(InitMlsGroupResponse {
         group_id,
@@ -534,6 +524,11 @@ pub async fn submit_mls_commit(
 
     // Epoch check — must match the current group epoch.
     if req.epoch != group.current_epoch {
+        crate::audit::mls_commit_rejected(
+            group.id,
+            req.sender_device_id,
+            "stale_epoch",
+        );
         return Err(AppError::Conflict(format!(
             "Stale Commit: expected epoch {}, got {}",
             group.current_epoch, req.epoch
@@ -626,15 +621,12 @@ pub async fn submit_mls_commit(
 
     tx.commit().await?;
 
-    tracing::info!(
-        group_id = %group.id,
-        channel_id = %channel_id,
-        sender = %req.sender_device_id,
-        old_epoch = req.epoch,
-        new_epoch = new_epoch,
-        new_members = req.new_member_device_ids.len(),
-        welcomes = req.welcome_messages.len(),
-        "MLS Commit accepted"
+    crate::audit::mls_commit_accepted(
+        group.id,
+        req.sender_device_id,
+        req.epoch,
+        new_epoch,
+        req.new_member_device_ids.len(),
     );
     Ok(Json(SubmitMlsCommitResponse { new_epoch }))
 }

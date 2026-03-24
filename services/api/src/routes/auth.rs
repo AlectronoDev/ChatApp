@@ -35,7 +35,7 @@ pub async fn signup(
     // Rate-limit signup attempts per target username to slow mass account
     // creation and username-squatting hammers.
     if state.auth_rate_limiter.check_key(&req.username).is_err() {
-        tracing::warn!(username = %req.username, "signup rate limit exceeded");
+        crate::audit::auth_rate_limited(&req.username, "signup");
         return Err(AppError::TooManyRequests);
     }
 
@@ -70,7 +70,7 @@ pub async fn signup(
     .execute(&state.db)
     .await?;
 
-    tracing::info!(user_id = %user_id, username = %req.username, "new account created");
+    crate::audit::auth_signup(user_id, &req.username);
 
     Ok((
         StatusCode::CREATED,
@@ -96,7 +96,7 @@ pub async fn login(
     // as possible. Keyed by username so an attack against one account does not
     // exhaust quota for others.
     if state.auth_rate_limiter.check_key(&req.username).is_err() {
-        tracing::warn!(username = %req.username, "login rate limit exceeded");
+        crate::audit::auth_rate_limited(&req.username, "login");
         return Err(AppError::TooManyRequests);
     }
 
@@ -114,10 +114,7 @@ pub async fn login(
 
     let password_valid = verify_password(req.password, user.password_hash).await?;
     if !password_valid {
-        tracing::warn!(
-            username = %req.username,
-            "failed login attempt — incorrect password"
-        );
+        crate::audit::auth_login_failure(&req.username, "bad_credentials");
         return Err(AppError::Unauthorized);
     }
 
@@ -135,11 +132,7 @@ pub async fn login(
     .await?;
 
     if session_count >= MAX_CONCURRENT_SESSIONS {
-        tracing::warn!(
-            user_id      = %user.id,
-            session_count = session_count,
-            "login rejected: concurrent session cap reached"
-        );
+        crate::audit::auth_login_session_cap(user.id, session_count);
         return Err(AppError::BadRequest(format!(
             "Maximum of {MAX_CONCURRENT_SESSIONS} concurrent sessions reached. \
              Sign out of an existing session first."
@@ -160,7 +153,7 @@ pub async fn login(
     .execute(&state.db)
     .await?;
 
-    tracing::info!(user_id = %user.id, "login successful");
+    crate::audit::auth_login_success(user.id);
 
     Ok(Json(LoginResponse {
         user_id: user.id,
@@ -183,7 +176,7 @@ pub async fn logout(
     .execute(&state.db)
     .await?;
 
-    tracing::info!(user_id = %auth.user_id, session_id = %auth.session_id, "session revoked");
+    crate::audit::auth_logout(auth.user_id, auth.session_id);
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -209,7 +202,7 @@ pub async fn recover(
     // Although a 128-bit random code makes guessing computationally infeasible,
     // limiting attempts is defence in depth.
     if state.auth_rate_limiter.check_key(&req.username).is_err() {
-        tracing::warn!(username = %req.username, "recovery rate limit exceeded");
+        crate::audit::auth_rate_limited(&req.username, "recover");
         return Err(AppError::TooManyRequests);
     }
 
@@ -233,10 +226,7 @@ pub async fn recover(
             .ct_eq(user.recovery_code_hash.as_bytes()),
     );
     if !code_valid {
-        tracing::warn!(
-            username = %req.username,
-            "failed recovery attempt — invalid recovery code"
-        );
+        crate::audit::auth_recover_failure(&req.username, "bad_recovery_code");
         return Err(AppError::Unauthorized);
     }
 
@@ -279,7 +269,7 @@ pub async fn recover(
 
     tx.commit().await?;
 
-    tracing::info!(user_id = %user.id, "account recovered via recovery code");
+    crate::audit::auth_recover_success(user.id);
 
     Ok(Json(RecoverResponse {
         new_recovery_code,
